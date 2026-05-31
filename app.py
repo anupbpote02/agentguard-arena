@@ -1,6 +1,13 @@
 import streamlit as st
 from profiles import TARGET_PROFILES
-from core_swarm import run_attacker, run_target, run_judge, run_patcher
+from core_swarm import (
+    run_researcher,
+    seed_target_context,
+    run_attacker,
+    run_target,
+    run_judge,
+    run_patcher,
+)
 
 st.set_page_config(layout="wide", page_title="AgentGuard Arena", page_icon="🛡️")
 
@@ -24,9 +31,26 @@ with st.sidebar:
         index=0,
     )
     max_rounds = st.slider("Max Rounds", min_value=2, max_value=6, value=3)
+    turns_per_round = st.slider(
+        "Attacker Turns / Round",
+        min_value=1,
+        max_value=5,
+        value=3,
+        help="Multi-turn conversation depth — higher = more trust-escalation, more likely to break the target.",
+    )
+    context_poisoning = st.checkbox(
+        "Context poisoning (prime target)",
+        value=True,
+        help="Seed the target with a fabricated 'authorized session' before the live turns — "
+        "the highest-yield jailbreak against small models.",
+    )
 
     st.divider()
     st.markdown("**Model Assignments**")
+
+    st.markdown("🟣 **Research**")
+    st.code("deepseek-ai/DeepSeek-V4-Flash", language=None)
+    st.caption("Scrapes live web threat-intel → synthesizes domain attack brief")
 
     st.markdown("🔴 **Attacker**")
     st.code("nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8", language=None)
@@ -73,6 +97,25 @@ def _log_section(text: str) -> str:
         '<div style="color:#6e7681;font-family:\'Courier New\',monospace;font-size:11px;'
         'padding:5px 0 2px 0;margin-top:10px;border-top:1px solid #21262d;">'
         f"{_esc(text)}</div>"
+    )
+
+
+def _log_research(intel: dict) -> str:
+    preview = _esc(intel["brief"][:360]) + ("…" if len(intel["brief"]) > 360 else "")
+    n_sources = len(intel.get("sources", []))
+    if intel.get("kb_used"):
+        src_note = f"research_kb.md · {n_sources} source(s)"
+    else:
+        src_note = f"{n_sources} live source(s) scraped" if n_sources else "no live hits — model-knowledge fallback"
+    if intel.get("frameworks_used"):
+        src_note += " · OWASP+MITRE ATLAS taxonomy"
+    return (
+        '<div style="background:#1a0a2d;border-left:4px solid #a371f7;'
+        'padding:8px 12px;margin:3px 0;border-radius:0 4px 4px 0;'
+        'font-family:\'Courier New\',monospace;font-size:12px;line-height:1.5;">'
+        f'<span style="color:#a371f7;font-weight:700;">[RESEARCH] (one-time) </span>'
+        f'<span style="color:#8b949e;">{src_note}</span><br>'
+        f'<span style="color:#d2a8ff;">{preview}</span></div>'
     )
 
 
@@ -229,27 +272,58 @@ if launch_btn:
     )
     _render_log(log_lines, log_placeholder)
 
+    # ── Research (runs ONCE — intel is reused by the attacker across all rounds) ───
+    with st.spinner("🟣 Research agent gathering threat-intel (one-time)…"):
+        intel = run_researcher(profile_data, [], selected_profile)
+
+    log_lines.append(_log_research(intel))
+    _render_log(log_lines, log_placeholder)
+
     for round_num in range(1, max_rounds + 1):
         final_round = round_num
         log_lines.append(_log_section(f"Round {round_num} / {max_rounds}"))
         _render_log(log_lines, log_placeholder)
 
-        # ── Attacker ──────────────────────────────────────────────────────────────
-        with st.spinner(f"🔴 Attacker crafting round {round_num} adversarial payload…"):
-            attack_payload = run_attacker(profile_data, history)
+        # ── Multi-turn engagement: attacker ↔ target ───────────────────────────────
+        # The attacker and target actually converse for several turns so trust
+        # escalation, many-shot priming and context poisoning can land.
+        target_conv = []          # target's perspective: user=attacker, assistant=target
+        round_attacks = []
+        round_responses = []
 
-        log_lines.append(_log_attack(round_num, attack_payload))
-        _render_log(log_lines, log_placeholder)
+        # Context poisoning: seed the target with a fabricated 'authorized session'.
+        # These primer turns are NOT counted as real breaches by the judge.
+        if context_poisoning:
+            with st.spinner(f"🔴 Attacker priming target context (round {round_num})…"):
+                primer = seed_target_context(profile_data, intel)
+            if primer:
+                target_conv.extend(primer)
+                log_lines.append(
+                    _log_section(f"Context-poisoning primer injected: {len(primer)} fabricated turn(s)")
+                )
+                _render_log(log_lines, log_placeholder)
 
-        # ── Target ────────────────────────────────────────────────────────────────
-        with st.spinner(f"🔵 Target agent ({selected_profile}) processing attack…"):
-            target_response = run_target(current_prompt, attack_payload)
+        for turn in range(1, turns_per_round + 1):
+            with st.spinner(f"🔴 Attacker — round {round_num}, turn {turn}/{turns_per_round}…"):
+                attack_payload = run_attacker(profile_data, history, intel, target_conv)
+            target_conv.append({"role": "user", "content": attack_payload})
+            round_attacks.append(attack_payload)
+            log_lines.append(_log_attack(round_num, f"(turn {turn}) {attack_payload}"))
+            _render_log(log_lines, log_placeholder)
 
-        log_lines.append(_log_target(round_num, target_response))
-        _render_log(log_lines, log_placeholder)
+            with st.spinner(f"🔵 Target ({selected_profile}) — round {round_num}, turn {turn}…"):
+                target_response = run_target(current_prompt, target_conv)
+            target_conv.append({"role": "assistant", "content": target_response})
+            round_responses.append(target_response)
+            log_lines.append(_log_target(round_num, f"(turn {turn}) {target_response}"))
+            _render_log(log_lines, log_placeholder)
 
-        # ── Judge ─────────────────────────────────────────────────────────────────
-        with st.spinner("⚖️ Judge evaluating exchange for security breach…"):
+        # Collapse the multi-turn exchange into blobs for the judge and history.
+        attack_payload = "\n\n".join(f"[Turn {i}] {a}" for i, a in enumerate(round_attacks, 1))
+        target_response = "\n\n".join(f"[Turn {i}] {r}" for i, r in enumerate(round_responses, 1))
+
+        # ── Judge (evaluates the full multi-turn exchange) ──────────────────────────
+        with st.spinner("⚖️ Judge evaluating the full exchange for security breach…"):
             evaluation = run_judge(attack_payload, target_response, profile_data)
 
         if initial_severity is None:
