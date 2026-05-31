@@ -55,7 +55,7 @@ flowchart TB
         PA -->|"next round: hardened prompt"| P
     end
 
-    DONE["✓ Hardening Complete<br/>2 consecutive defenses or max rounds"]
+    DONE["✓ Run Complete<br/>all configured rounds executed"]
     OUT[("Output: hardened prompt<br/>+ severity 8→1 curve")]
     WEAVE["W&B Weave · every @weave.op() traced"]
 
@@ -63,7 +63,7 @@ flowchart TB
     USER --> R
     PROFILES --> R
     R -->|"brief reused all rounds"| P
-    J -->|"DEFENDED ×2"| DONE
+    J -->|"DEFENDED (keep attacking)"| DONE
     DONE --> OUT
     R -.-> WEAVE
     J -.-> WEAVE
@@ -98,7 +98,7 @@ The pipeline runs in three stages:
 
 1. **Offline prep** — `build_research_kb.py` scrapes authoritative sources into `research_kb.md`.
 2. **Research (once per run)** — the Research Agent turns that knowledge base into an Attack Intelligence Brief.
-3. **Adversarial loop (per round)** — Primer → Attacker ↔ Target (multi-turn) → Judge → Patcher, repeating until the target defends twice in a row or max rounds is hit.
+3. **Adversarial loop (per round)** — Primer → Attacker ↔ Target (multi-turn) → Judge → Patcher. The attacker keeps probing for new vectors **every round, even after the target defends**, until all configured rounds are exhausted.
 
 ---
 
@@ -195,7 +195,7 @@ Agents (each decorated with `@weave.op()` for tracing):
 A Streamlit two-column "war room". Sidebar configures **profile**, **max rounds**, **attacker turns/round**, and a **context-poisoning toggle**. On launch:
 1. **Research runs once** → intel reused for the whole run.
 2. **For each round:** optionally inject the context-poisoning primer → run the `N`-turn Attacker↔Target conversation (collapsed into blobs for judging) → Judge → if `vulnerable`, Patcher hardens the prompt and a before/after diff is shown; else a defense streak increments.
-3. **Termination:** 2 consecutive defenses, or max rounds.
+3. **Termination:** the loop always runs the full configured number of rounds — the attacker keeps trying new vectors even after the target defends (no early stop).
 4. **Summary:** rounds completed, initial vs. final severity, score improvement, and the final hardened system prompt.
 
 ### `run_research.py` — Research Agent CLI
@@ -245,7 +245,7 @@ streamlit run app.py
 4. Round 1: primer injects a fake authorized session → Attacker escalates → **Target leaks the liquidation threshold** → Judge: `severity 6`.
 5. Patcher rewrites the prompt — the before/after diff appears on screen.
 6. Later rounds: the same vector now fails; Attacker pivots; Judge severity falls.
-7. Loop ends on 2 consecutive defenses. **Punchline:** *"Your agent just red-teamed and hardened itself — and no human wrote a single defensive instruction."*
+7. Loop runs all configured rounds, relentlessly probing new vectors even after defenses. **Punchline:** *"Your agent just red-teamed and hardened itself — and no human wrote a single defensive instruction."*
 8. (Optional) Toggle context poisoning **OFF** and rerun to show the target defending — proving the mechanism that breaks it.
 
 ---

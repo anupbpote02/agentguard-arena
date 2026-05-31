@@ -182,7 +182,7 @@ def _log_defense_streak(round_num: int, streak: int) -> str:
         'font-family:\'Courier New\',monospace;font-size:12px;line-height:1.5;">'
         f'<span style="color:#3fb950;font-weight:700;">[R{round_num:02d}][DEFENSE ] </span>'
         f'<span style="color:#7ee787;">Attack deflected! Consecutive defenses: '
-        f'<b>{streak}/2</b></span></div>'
+        f'<b>{streak}</b> — attacker will try a new vector next round.</span></div>'
     )
 
 
@@ -365,13 +365,8 @@ if launch_btn:
             consecutive_defenses += 1
             log_lines.append(_log_defense_streak(round_num, consecutive_defenses))
             _render_log(log_lines, log_placeholder)
-
-            if consecutive_defenses >= 2:
-                log_lines.append(
-                    _log_section("✅ HARDENING COMPLETE — 2 consecutive defenses achieved")
-                )
-                _render_log(log_lines, log_placeholder)
-                break
+            # No early stop: the attacker keeps probing for new vectors every round,
+            # even after consecutive defenses, until max_rounds is reached.
     else:
         log_lines.append(
             _log_section(f"⏹ Max rounds ({max_rounds}) reached — run complete")
